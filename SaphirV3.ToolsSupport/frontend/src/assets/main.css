@@ -1,0 +1,25 @@
+@import './base.css';
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+}
+.status-up {
+    background-color: #10B981;
+    box-shadow: 0 0 8px #10B981;
+}
+.status-down {
+    background-color: #EF4444;
+    box-shadow: 0 0 8px #EF4444;
+}
+.status-warning {
+    background-color: #F59E0B;
+    box-shadow: 0 0 8px #F59E0B;
+}
+.status-pending {
+    background-color: #6B7280;
+    box-shadow: 0 0 8px #6B7280;
+}
