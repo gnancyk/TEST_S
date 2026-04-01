@@ -45,6 +45,8 @@ export default {
       check_organizationID: { etape: 0, status: false, message: '' },
       check_ps_funtion: { etape: 0, status: false, message: '' },
       check_service_windows: { etape: 0, status: false, message: '' },
+      check_config_batch: { etape: 0, status: false, message: '' },
+      result_config_batch: null,
 
     };
   },
@@ -123,6 +125,8 @@ export default {
       this.check_organizationID = { etape: 0, status: false, message: '' };
       this.check_ps_funtion = { etape: 0, status: false, message: '' };
       this.check_service_windows = { etape: 0, status: false, message: '' };
+      this.check_config_batch = { etape: 0, status: false, message: '' };
+      this.result_config_batch = null;
 
 
       if (this.selectedOrganisation) {
@@ -355,6 +359,30 @@ export default {
         this.check_service_windows.etape = 2;
         this.check_service_windows.status = true;
         console.log(batch_service_response);
+
+        // Exécution de l'API de vérification de configuration XML pour les services Windows Batch
+        try {
+          this.check_config_batch.etape = 1;
+          const payload_batch_config = {
+            username: this.parametres.login_sql, // ou login_crm selon vos standards d'admin
+            password: this.parametres.password_sql,
+            centralParam: this.parametres.lien_crm || "http://localhost", 
+            liste_servers: {
+              liste: [{ serveur: this.parametres.serveur_batch }]
+            }
+          };
+          const batch_config_query = await fetch(`http://127.0.0.1:5000/batch/services/windows/verification/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload_batch_config)
+          });
+          const batch_config_response = await batch_config_query.json();
+          this.result_config_batch = batch_config_response.response;
+          this.check_config_batch.etape = 2;
+          this.check_config_batch.status = true;
+        } catch(error) {
+           console.error("Erreur check XML Config: ", error);
+        }
 
         this.show_result = true
 
@@ -1376,6 +1404,33 @@ export default {
                   </li>
 
                 </ul>
+              </div>
+            </div>
+            
+            <div class="bg-gray-50 px-4 py-3 border-t border-b mt-4" v-if="result_config_batch">
+              <h2 class="text-xl font-semibold">Vérification de la configuration XML locale (CentralParamEndPoint)</h2>
+            </div>
+            <div class="p-4" v-if="result_config_batch">
+              <div v-for="(serveurData, serverName) in result_config_batch" :key="serverName" class="mb-4">
+                <h3 class="font-bold text-lg mb-2 text-gray-800">Serveur cible : {{ serverName }}</h3>
+                
+                <div v-if="serveurData.anomalies && serveurData.anomalies.length > 0">
+                  <div class="flex items-center text-red-600 mb-2">
+                    <i class="fa fa-exclamation-triangle mr-2"></i>
+                    <span>{{ serveurData.anomalies.length }} service(s) avec des anomalies XML :</span>
+                  </div>
+                  <ul class="list-disc pl-5 text-sm text-gray-700 space-y-1">
+                    <li v-for="anom in serveurData.anomalies" :key="anom.service">
+                      <strong>{{ anom.service }}</strong>
+                      <span v-if="anom.erreur" class="text-red-500"> - {{ anom.erreur }}</span>
+                      <span v-else> - Le point de terminaison ne correspond au CentralParam</span>
+                    </li>
+                  </ul>
+                </div>
+                <div v-else class="flex items-center text-green-600">
+                  <i class="fa fa-check-circle mr-2"></i>
+                  <span>Tous les services XML sont bien configurés.</span>
+                </div>
               </div>
             </div>
           </div>

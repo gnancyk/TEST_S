@@ -1,6 +1,6 @@
 from flask import Flask
 from .models import db
-from .controllers import user_controller, central_param_controller, infra_controller, database_controller, batch_controller
+from .controllers import user_controller, central_param_controller, infra_controller, database_controller, batch_controller, organisation_controller, crm_controller
 from .config import Config
 from flask_cors import CORS
 
@@ -19,5 +19,7 @@ def create_app():
     app.register_blueprint(infra_controller.bp)
     app.register_blueprint(batch_controller.bp)
     app.register_blueprint(database_controller.bp)
+    app.register_blueprint(organisation_controller.bp)
+    app.register_blueprint(crm_controller.bp)
 
     return app

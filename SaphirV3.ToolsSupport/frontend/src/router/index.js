@@ -11,7 +11,7 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: HomeView,
+      redirect: '/tools/checklist',
     },
     {
       path: '/about',
@@ -46,6 +46,13 @@ const router = createRouter({
       name: 'tools_differentiel',
       component: ChecklistView,
     },
+    {
+      path: '/tools/verification-config-service-windows',
+      name: 'tools_verification_config_service_windows',
+      component: ChecklistView,
+    },
+
+
   ],
 })
 

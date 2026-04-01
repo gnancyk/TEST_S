@@ -5,26 +5,33 @@ bp = Blueprint('database', __name__, url_prefix='/database')
 
 @bp.route('/disponibilite', methods=['POST'])
 def disponibite_et_version():
-    data = request.get_json()
-    
-    serveurs = data.get('liste_servers')
-    username = data.get('username')
-    password = data.get('password')
-    
-    versions = {}
-    
-    # print(serveurs)
-    
-    serveur = {}
-    for serv in serveurs:
-        version = avoir_version(serv, username, password) 
-        # print(serv)
-        serveur[serv] = version[0][0]
-        # print(serv, version[0])
+    try:
+        data = request.get_json()
+        if not data or 'liste_servers' not in data or 'username' not in data or 'password' not in data:
+            return jsonify({'status': 400, 'message': 'Données invalides ou manquantes (liste_servers, username, password)'}), 400
         
-    versions = serveur
+        serveurs = data['liste_servers']
+        username = data['username']
+        password = data['password']
         
-    return jsonify({'status': 200, 'message': f"Version du serveur SQL récupérée {serveurs}", 'response': versions})
+        if not isinstance(serveurs, list):
+            return jsonify({'status': 400, 'message': 'liste_servers doit être une liste de noms de serveurs'}), 400
+        
+        versions = {}
+        
+        for serv in serveurs:
+            try:
+                version = avoir_version(serv, username, password)
+                if version and len(version) > 0:
+                    versions[serv] = version[0][0]
+                else:
+                    versions[serv] = 'Version non récupérée'
+            except Exception as e:
+                versions[serv] = f'Erreur: {str(e)}'
+        
+        return jsonify({'status': 200, 'message': 'Versions des serveurs SQL récupérées', 'response': versions})
+    except Exception as e:
+        return jsonify({'status': 500, 'message': f'Erreur interne: {str(e)}'}), 500
 
 
 @bp.route('/statistique', methods=['POST'])
@@ -107,4 +114,29 @@ def verification_organisation_id():
         statistiques[instance['serveur']] = {'soucis':len(retour),'all':retour}
     
     return jsonify({'status': 200, 'message':"Vérification OrganisationID", 'response': statistiques})
+
+@bp.route('/recuperation/triggers', methods=['POST'])
+def get_triggers():
+    data = request.get_json()
+
+    serveurs = data.get('liste_servers')
+    username = data.get('username')
+    password = data.get('password')
+    database = data.get('database')
+
+    statistiques = {}
+
+    for instance in data['liste_servers']['liste']:
+        triggers = verifier_trigger(instance['instance'], username, password, database)
+
+        liste_triggers = []
+        for elt in triggers:
+            liste_triggers.append({
+                'nom': elt[0],
+                'status': 'Activé' if not elt[3] else 'Désactivé'
+            })
+
+        statistiques[instance['serveur']] = {'triggers': len(liste_triggers), 'liste': liste_triggers}
+
+    return jsonify({'status': 200, 'message': "Récupération des triggers", 'response': statistiques})
 

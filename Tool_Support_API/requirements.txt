@@ -40,3 +40,4 @@ wfastcgi==3.0.0
 WMI==1.5.1
 xmltodict==0.14.2
 zeep==4.3.1
+python-dotenv==1.0.1

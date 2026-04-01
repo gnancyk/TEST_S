@@ -129,10 +129,10 @@ def verification_catalogues_ps_function(instance_sql, username, password):
     resultats = executer_sql_instance(instance_sql, username, password,query)
     
     all_catalogues = get_sql_server_catalogs(instance_sql, username, password, database="master")
-    all_catalogues.append('dbo')
-    all_catalogues.append('A')
-    all_catalogues.append('T')
-    all_catalogues.append('AdventureWorks')
+    
+    import os
+    allowed_catalogs_env = os.getenv('DEFAULT_ALLOWED_CATALOGS', 'dbo,A,T,AdventureWorks').split(',')
+    all_catalogues.extend(allowed_catalogs_env)
     
     func = []
     ps   = []
@@ -167,5 +167,18 @@ def verification_catalogues_ps_function(instance_sql, username, password):
                     # print( proc.ROUTINE_NAME, proc.SPECIFIC_CATALOG, proc.ROUTINE_TYPE, cat)
     
     return procedures_et_function_list, ps, func
+
+def verifier_trigger(server, username, password, database):
+    """Récupère tous les triggers d'une base de données"""
+    query = """
+    SELECT
+        name,
+        parent_id,
+        type_desc,
+        is_disabled
+    FROM
+        sys.triggers
+    """
+    return executer_sql_instance(server, database, username, password, query)
 
 

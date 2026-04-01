@@ -23,22 +23,16 @@ def verification_port_ouvert(host, port=5986):
     try:
         # Tentative de connexion au port
         with socket.create_connection((host, port), timeout=5):
-            # # The code you provided does not contain any reference to a variable or function named
-            # `pr`. If you could provide more context or clarify where `pr` is used in your code, I
-            # would be happy to help explain its purpose or functionality.
-            print(f"Le port {port} est ouvert sur {host}.")
             return True
     except (socket.timeout, socket.error):
-        # print(f"Le port {port} est fermé sur {host}.")
         return False
     
     
 def verification_antivirus(hostname,username,password):
     
     query = """
-                Get-Service | Where-Object { $_.DisplayName -like "*McAfee*" -or $_.DisplayName -like "*Windows Defender*" -or $_.DisplayName -like "*Kaspersky Endpoint*" }   | Select-Object Status,DisplayName,PSComputerName | ConvertTo-Json
+                Get-WmiObject -Namespace "root\SecurityCenter2" -Query "SELECT * FROM AntivirusProduct" | Select-Object @{Name="DisplayName"; Expression={$_.displayName}}, @{Name="Status"; Expression={ $state = $_.productState; $enabled = ($state -band 0x1000); if ($enabled) { "Enabled" } else { "Disabled" } }} | ConvertTo-Json
             """
-                # Get-WmiObject -Namespace "root\SecurityCenter2" -Query "SELECT * FROM AntivirusProduct" 
     return execution_powershell_hote_distant(hostname,username,password,query)
 
 # def performances_serveur(hostname,username,password):
