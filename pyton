@@ -1,0 +1,51 @@
+from ldap3 import Server, Connection, ALL
+
+def test_auth(username, password):
+    # CONFIG (à adapter)
+    AD_SERVER = "ldap://192.168.1.10"
+    DOMAIN = "ENTREPRISE"
+
+    try:
+        # Connexion serveur
+        server = Server(AD_SERVER, get_info=ALL)
+
+        # Tentative d'authentification
+        conn = Connection(
+            server,
+            user=f"{DOMAIN}\\{username}",
+            password=password,
+            authentication="NTLM",
+            auto_bind=True
+        )
+
+        print("✅ Connexion réussie !")
+
+        # Recherche des infos utilisateur
+        conn.search(
+            search_base="dc=entreprise,dc=local",
+            search_filter=f"(sAMAccountName={username})",
+            attributes=["mail", "displayName"]
+        )
+
+        if conn.entries:
+            user = conn.entries[0]
+
+            email = user.mail.value if user.mail else "Non disponible"
+            name = user.displayName.value if user.displayName else username
+
+            print(f"👤 Nom : {name}")
+            print(f"📧 Email : {email}")
+
+        else:
+            print("⚠️ Utilisateur trouvé mais aucune info récupérée")
+
+    except Exception as e:
+        print("❌ Échec de connexion")
+        print(e)
+
+
+# TEST
+username = input("Login : ")
+password = input("Mot de passe : ")
+
+test_auth(username, password)
