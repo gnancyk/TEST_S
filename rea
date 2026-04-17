@@ -1,0 +1,897 @@
+# Tool Support API
+
+> **Système automatisé de contrôle de conformité des environnements applicatifs SaphirV3**  
+> GS2E — Groupement des Services Eau et Électricité | Département des Développements Informatiques (DDI)  
+> Version 1.0 | Avril 2026
+
+---
+
+## Table des matières
+
+1. [Présentation du projet](#1-présentation-du-projet)
+2. [Architecture du système](#2-architecture-du-système)
+3. [Prérequis](#3-prérequis)
+4. [Installation](#4-installation)
+5. [Configuration (.env)](#5-configuration-env)
+6. [Structure du projet](#6-structure-du-projet)
+7. [Base de données](#7-base-de-données)
+8. [Endpoints API — Référence complète](#8-endpoints-api--référence-complète)
+9. [Modules de vérification](#9-modules-de-vérification)
+10. [Points de contrôle (checklist)](#10-points-de-contrôle-checklist)
+11. [Authentification](#11-authentification)
+12. [Frontend Vue.js](#12-frontend-vuejs)
+13. [Tests](#13-tests)
+14. [Déploiement en production](#14-déploiement-en-production)
+15. [Dépannage](#15-dépannage)
+16. [Contribuer](#16-contribuer)
+
+---
+
+## 1. Présentation du projet
+
+### Contexte
+
+SaphirV3 est le CRM de gestion clientèle de la CIE (Compagnie Ivoirienne d'Électricité) et de la SODECI (Société de Distribution d'Eau de Côte d'Ivoire), développé et maintenu par le DDI du GS2E. Il est basé sur Microsoft Dynamics CRM (on-premise) et déployé sur une infrastructure multi-serveurs (Frontend, Backend, Base de données, Batch, Rapport).
+
+Lors de chaque création ou reconfiguration d'un environnement SaphirV3, les techniciens du DDI devaient effectuer manuellement une checklist de **38 points de contrôle** sur l'ensemble des serveurs — opération longue (3 à 4 heures), source d'erreurs d'omission et sans traçabilité.
+
+### Solution
+
+**Tool Support API** est une application web deux couches qui automatise l'intégralité de ces vérifications :
+
+- **Backend** : API REST Python/Flask exposant les endpoints de vérification
+- **Frontend** : SPA Vue.js 3 permettant de configurer les environnements, lancer les vérifications, suivre la progression en temps réel et générer des rapports
+
+### Gains mesurés
+
+| Indicateur | Avant | Après |
+|---|---|---|
+| Durée de vérification | 3 à 4 heures | 12 à 18 minutes |
+| Couverture checklist | ~85% (omissions) | 100% exhaustif |
+| Traçabilité | Aucune | Complète (BDD horodatée) |
+| Connexions manuelles serveurs | Requises | Aucune |
+
+---
+
+## 2. Architecture du système
+
+```
+┌─────────────────┐     HTTPS      ┌──────────────────────┐
+│  Navigateur     │ ─────────────► │  Frontend Vue.js 3   │
+│  (Technicien)   │                │  servi par IIS       │
+└─────────────────┘                └──────────┬───────────┘
+                                              │ REST/JSON
+                                   ┌──────────▼───────────┐
+                                   │  Backend Flask API   │
+                                   │  Python 3.10         │
+                                   │  Port 5000           │
+                                   └─────┬────────────────┘
+                                         │
+              ┌──────────────────────────┼──────────────────────────┐
+              │                          │                           │
+   ┌──────────▼──────────┐  ┌───────────▼──────────┐  ┌────────────▼─────────┐
+   │   SQLite (app BDD)  │  │  Infrastructure       │  │  Active Directory    │
+   │   Environnements    │  │  SaphirV3             │  │  LDAP/NTLM           │
+   │   Historique        │  │  ┌─ Srv Frontend      │  │  Authentification    │
+   │   Rapports          │  │  ├─ Srv Backend        │  └──────────────────────┘
+   └─────────────────────┘  │  ├─ Srv BDD (SQL)      │
+                             │  ├─ Srv Batch          │
+                             │  └─ Srv Rapport(SSRS)  │
+                             └───────────────────────┘
+
+Protocoles utilisés :
+  HTTP/NTLM  → CRM Dynamics (vérification accessibilité, version, ressource JS)
+  pyodbc     → SQL Server (triggers, catalogues, TempDB, seuils, OrganizationId)
+  PSSession  → PowerShell distant (services Windows, WMI, performances, datetime)
+  SOAP/zeep  → Service CentralParam (paramètres de configuration)
+  LDAP/ldap3 → Active Directory (authentification, groupes, comptes services)
+  ICMP/ping3 → Disponibilité serveurs
+```
+
+---
+
+## 3. Prérequis
+
+### Serveur Tool Support API (Windows Server 2016/2019)
+
+| Composant | Version minimale | Remarque |
+|---|---|---|
+| Python | 3.10 | Avec pip |
+| Node.js | 20.18 LTS | Pour le build Vue.js |
+| IIS | 10 | Pour servir le frontend |
+| ODBC Driver | 17 pour SQL Server | Téléchargeable chez Microsoft |
+| Git | Dernière version | Pour récupérer le code |
+
+### Réseau
+
+- Port **5986** (WinRM HTTPS) ouvert sur tous les serveurs SaphirV3 cibles
+- Accès LDAP au contrôleur de domaine Active Directory du DDI
+- Accès TCP/1433 à l'instance SQL Server SaphirV3
+- Accès HTTP/HTTPS aux URLs CRM et CentralParam
+
+### Compte de service
+
+Un compte de service Windows avec les droits :
+- Lecture sur Active Directory (LDAP)
+- Connexion SQL Server en lecture sur la base CRM
+- Accès PSRemoting aux serveurs SaphirV3 (groupe WSManAccess)
+
+---
+
+## 4. Installation
+
+### 4.1 Cloner le dépôt
+
+```bash
+git clone https://GS2E-AzureDevOps/DDI/ToolSupportAPI.git
+cd ToolSupportAPI
+```
+
+### 4.2 Backend Python
+
+```bash
+# Créer l'environnement virtuel
+python -m venv venv
+venv\Scripts\activate      # Windows
+# source venv/bin/activate  # Linux/Mac
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Copier et configurer le fichier d'environnement
+copy .env.example .env
+# Éditer .env avec les valeurs réelles (voir section 5)
+
+# Initialiser la base de données
+python -m flask db init
+python -m flask db migrate -m "Initial migration"
+python -m flask db upgrade
+
+# Peupler les tables de référence (modules et points de contrôle)
+python scripts/seed_controls.py
+
+# Lancer en développement
+python run.py
+```
+
+### 4.3 Frontend Vue.js
+
+```bash
+cd frontend
+npm install
+npm run dev      # Développement (port 5173)
+npm run build    # Build de production → dossier dist/
+```
+
+### 4.4 Configurer IIS pour le frontend
+
+```
+Site IIS : ToolSupportFrontend
+Chemin physique : C:\ToolSupportAPI\frontend\dist
+Binding : HTTPS port 443
+Application Pool : .NET CLR version → Aucun code managé
+```
+
+---
+
+## 5. Configuration (.env)
+
+Copier `.env.example` en `.env` et renseigner toutes les valeurs.
+
+```env
+# ── FLASK ──────────────────────────────────────────────────
+FLASK_ENV=production
+SECRET_KEY=GENERER_UNE_CLE_ALEATOIRE_ICI
+# python -c "import os; print(os.urandom(32).hex())"
+
+# ── BASE DE DONNÉES APPLICATIVE ────────────────────────────
+DATABASE_URL=sqlite:///tool_support.db
+# Pour SQL Server : mssql+pyodbc://user:pass@server/db?driver=ODBC+Driver+17+for+SQL+Server
+
+# ── ACTIVE DIRECTORY ───────────────────────────────────────
+AD_SERVER=ldaps://dc01.gs2e.local
+AD_DOMAIN=gs2e.local
+AD_BASE_DN=DC=gs2e,DC=local
+AD_PRIV_GROUP=PrivUserGroup
+# Durée de validité d'un jeton de session (en heures)
+SESSION_DURATION_HOURS=8
+
+# ── WINRM / POWERSHELL DISTANT ─────────────────────────────
+WINRM_PORT=5986
+WINRM_TRANSPORT=ntlm
+WINRM_TIMEOUT=30
+# Compte de service pour les PSSession
+WINRM_USERNAME=svc_toolsupport@gs2e.local
+WINRM_PASSWORD=MOT_DE_PASSE_SECURISE
+
+# ── SQL SERVER (connexions de vérification) ────────────────
+SQL_DRIVER=ODBC Driver 17 for SQL Server
+SQL_TIMEOUT=30
+SQL_RETRY=2
+
+# ── CATALOGUE SQL AUTORISÉS ────────────────────────────────
+# Catalogues considérés comme valides dans les PS et fonctions CRM
+SQL_CATALOGUES_AUTORISES=dbo,gs2e,CRM_ORGANISATION
+
+# ── CRM DYNAMICS ───────────────────────────────────────────
+CRM_SSL_VERIFY=false
+# En production, pointer vers le certificat CA :
+# CRM_CA_CERT=C:\certs\gs2e-ca.crt
+
+# ── SMTP (envoi des rapports par email) ────────────────────
+SMTP_HOST=smtp.gs2e.local
+SMTP_PORT=587
+SMTP_USERNAME=noreply@gs2e.ci
+SMTP_PASSWORD=MOT_DE_PASSE_SMTP
+SMTP_FROM=Tool Support API <noreply@gs2e.ci>
+SMTP_TLS=true
+
+# ── MÉTRIQUES SEUILS (infrastructure) ─────────────────────
+# RAM minimale requise en GB
+SEUIL_RAM_MIN_GB=8
+# Espace disque minimal requis en GB
+SEUIL_DISQUE_MIN_GB=20
+# CPU usage maximum accepté en %
+SEUIL_CPU_MAX_PERCENT=80
+# Fragmentation index : seuil REORGANIZE (%)
+SEUIL_FRAGMENTATION_REORGANIZE=10
+# Fragmentation index : seuil REBUILD (%)
+SEUIL_FRAGMENTATION_REBUILD=30
+
+# ── TEMPDB ─────────────────────────────────────────────────
+TEMPDB_FICHIERS_REQUIS=4
+
+# ── LOGGING ────────────────────────────────────────────────
+LOG_LEVEL=INFO
+LOG_FILE=logs/tool_support.log
+```
+
+### Valeurs à ne jamais mettre dans le code
+
+- `SECRET_KEY` : toujours depuis `.env`, jamais en dur dans `config.py`
+- Mots de passe AD/SQL/SMTP : toujours depuis `.env`
+- Credentials PowerShell : passés via `PSCredential` (jamais en clair dans les commandes)
+
+---
+
+## 6. Structure du projet
+
+```
+ToolSupportAPI/
+│
+├── app/
+│   ├── __init__.py               # Factory Flask + enregistrement blueprints + errorhandler global
+│   ├── config.py                 # DevConfig, ProdConfig (chargement python-dotenv)
+│   ├── models.py                 # Modèles SQLAlchemy (toutes les tables)
+│   │
+│   ├── controllers/              # Blueprints Flask (réception HTTP uniquement)
+│   │   ├── auth_controller.py          # /auth/*
+│   │   ├── environment_controller.py   # /environments/*
+│   │   ├── verification_controller.py  # /verifications/*
+│   │   ├── central_param_controller.py # /central-param/*
+│   │   ├── crm_controller.py           # /crm/*
+│   │   ├── infra_controller.py         # /infra/*
+│   │   ├── database_controller.py      # /database/*
+│   │   ├── batch_controller.py         # /batch/*
+│   │   ├── backend_controller.py       # /backend/*
+│   │   ├── rapport_controller.py       # /rapport/*
+│   │   └── rapport_gen_controller.py   # /verifications/{id}/rapport
+│   │
+│   ├── services/                 # Logique métier (aucun HTTP ici)
+│   │   ├── auth_service.py             # Validation LDAP, gestion sessions
+│   │   ├── environment_service.py      # CRUD environnements, validation URL
+│   │   ├── verification_service.py     # Orchestration vérifications (threads)
+│   │   ├── central_param_service.py    # SOAP zeep, CentralParamConfig
+│   │   ├── crm_service.py              # HTTP NTLM CRM, ressource JS, chiffrement
+│   │   ├── infra_service.py            # Ping, WMI, PowerShell distant, ports
+│   │   ├── database_service.py         # pyodbc SQL Server, triggers, index
+│   │   ├── batch_service.py            # Services Windows, fichier critères, pool
+│   │   ├── backend_service.py          # Services Dynamics CRM, IIS Backend
+│   │   ├── rapport_service.py          # SSRS, formats régionaux, connexions
+│   │   └── rapport_gen_service.py      # Génération PDF/Excel/JSON, envoi email
+│   │
+│   └── utils/                    # Fonctions bas niveau réutilisables
+│       ├── sql_utils.py                # executer_sql_instance(), connexion pyodbc
+│       ├── powershell_utils.py         # ouvrir_session_ps(), executer_distant()
+│       ├── ntlm_utils.py               # Requêtes HTTP avec auth NTLM
+│       ├── ldap_utils.py               # Connexion ldap3, vérif groupes AD
+│       └── config_utils.py             # Chargement variables .env, seuils
+│
+├── migrations/                   # Fichiers Flask-Migrate (Alembic)
+│
+├── scripts/
+│   ├── seed_controls.py          # Peupler Controls et Modules en BDD
+│   └── create_admin.py           # Créer le premier compte administrateur
+│
+├── tests/
+│   ├── test_auth_service.py
+│   ├── test_crm_service.py
+│   ├── test_database_service.py
+│   ├── test_infra_service.py
+│   └── conftest.py               # Fixtures pytest (mocks pyodbc, PSSession, ldap3)
+│
+├── frontend/                     # Application Vue.js 3
+│   ├── src/
+│   │   ├── views/
+│   │   │   ├── LoginView.vue
+│   │   │   ├── DashboardView.vue
+│   │   │   ├── EnvironmentsView.vue
+│   │   │   ├── VerificationView.vue
+│   │   │   ├── HistoryView.vue
+│   │   │   └── ReportsView.vue
+│   │   ├── components/
+│   │   ├── stores/               # Pinia stores
+│   │   ├── services/             # Appels API axios
+│   │   └── router/
+│   ├── package.json
+│   └── vite.config.js
+│
+├── logs/                         # Fichiers de logs (gitignore)
+├── .env.example                  # Template des variables d'environnement
+├── .env                          # Variables réelles (gitignore — JAMAIS committer)
+├── .gitignore
+├── requirements.txt
+├── run.py                        # Point d'entrée Flask
+└── README.md
+```
+
+---
+
+## 7. Base de données
+
+### Schéma complet
+
+Le projet utilise **SQLite** pour la base de données applicative (environnements, historique, rapports). La base SQL Server de SaphirV3 est uniquement interrogée lors des vérifications — elle n'est jamais modifiée.
+
+#### Tables principales
+
+| Table | Rôle |
+|---|---|
+| `Users` | Agents DDI autorisés — login AD, nom complet, rôle (admin/technicien) |
+| `session_utilisateur` | Jetons de session après authentification AD |
+| `Environments` | Fiches environnements SaphirV3 (nom, URLs, instance SQL, domaine AD) |
+| `Servers` | Serveurs rattachés à chaque environnement avec leur rôle |
+| `EnvironmentConfigurations` | Configuration snapshot d'un environnement |
+| `profil_verification` | Profils de sélection de modules pré-enregistrés |
+| `Modules` | Référentiel des modules disponibles (CRM, BDD, Batch...) |
+| `Controls` | Référentiel de tous les points de contrôle par module |
+| `Verifications` | Sessions de vérification (qui, quoi, quand, combien de temps) |
+| `VerificationModules` | Modules exécutés pour chaque session |
+| `ControlResults` | Résultats détaillés par point de contrôle |
+| `ServerResults` | Résultats par serveur pour une vérification |
+| `VerificationConfigurations` | Snapshot config au moment de la vérification |
+| `rapport` | Rapports générés (PDF/JSON/Excel) |
+| `alerte_configuration` | Configuration des alertes automatiques |
+
+#### Commandes de gestion
+
+```bash
+# Créer/mettre à jour la BDD
+flask db upgrade
+
+# Voir les migrations en attente
+flask db current
+
+# Créer le premier admin
+python scripts/create_admin.py --username prenom.nom --role admin
+
+# Peupler les points de contrôle
+python scripts/seed_controls.py
+```
+
+---
+
+## 8. Endpoints API — Référence complète
+
+**URL de base :** `http://localhost:5000/api/v1`  
+**Authentification :** Header `Authorization: Bearer <token>` (sauf `/auth/login`)  
+**Format réponses :** JSON `{ "status": "success|error", "data": {...}, "message": "..." }`
+
+### 8.1 Authentification
+
+```
+POST   /auth/login                    Authentification Active Directory → retourne token
+POST   /auth/logout                   Invalider le token courant
+GET    /auth/me                       Infos de l'utilisateur connecté
+GET    /auth/users                    [ADMIN] Lister tous les utilisateurs
+POST   /auth/users                    [ADMIN] Ajouter un utilisateur autorisé
+PUT    /auth/users/{id}               [ADMIN] Modifier rôle / activer / désactiver
+POST   /auth/ad/group/privusergroup   Vérifier appartenance comptes services au groupe PrivUserGroup
+```
+
+### 8.2 Environnements
+
+```
+GET    /environments                  Lister tous les environnements (avec dernier statut)
+POST   /environments                  Créer un environnement
+GET    /environments/{id}             Détail d'un environnement
+PUT    /environments/{id}             Modifier un environnement
+DELETE /environments/{id}             Archiver un environnement (soft delete)
+POST   /environments/{id}/validate    Tester l'URL CentralParam et valider l'environnement
+GET    /environments/{id}/admin-users Lister les users admin SQL Server de cet environnement
+GET    /environments/profils          Lister les profils de vérification
+POST   /environments/profils          Créer un profil (pré-sélection de modules)
+PUT    /environments/profils/{id}     Modifier un profil
+DELETE /environments/profils/{id}     Supprimer un profil
+```
+
+### 8.3 Vérifications
+
+```
+POST   /verifications                       Lancer une vérification
+GET    /verifications/history               Historique avec filtres (env, user, date, statut)
+GET    /verifications/{id}                  Détail d'une session
+GET    /verifications/{id}/status           Progression en temps réel (polling)
+GET    /verifications/{id}/results          Résultats détaillés par module et par point
+POST   /verifications/{id}/modules/{m}/retry Relancer un module en erreur
+GET    /verifications/compare?v1=&v2=       Comparer deux sessions (vue différentielle)
+GET    /verifications/{id}/services-status  Vérification réponses 200 de tous les services
+```
+
+### 8.4 Rapports
+
+```
+POST   /verifications/{id}/rapport    Générer un rapport (PDF/JSON/Excel)
+GET    /rapports                      Lister les rapports générés
+GET    /rapports/{id}                 Détail / téléchargement d'un rapport
+POST   /rapports/{id}/email           Envoyer le rapport par email
+```
+
+### 8.5 Module CRM / Frontend
+
+```
+POST   /crm/disponibilite             Vérifier accessibilité CRM (HTTP NTLM)
+POST   /crm/version                   Récupérer version CRM (Web API RetrieveVersion)
+POST   /crm/auth                      Vérifier authentification d'un compte sur le CRM
+POST   /crm/ressource/fonctions-generales   Analyser gs2e_FonctionsGenerales (3 params)
+POST   /crm/ressources/encodees       Analyser toutes les ressources web encodées base64
+POST   /crm/chiffrement               Vérifier clé de chiffrement active
+POST   /crm/webconfig                 Vérifier timeout et maxRequestLength web.config
+```
+
+### 8.6 Module CentralParam
+
+```
+POST   /central-param/controle        Valider URL CentralParam (syntaxe + SOAP)
+POST   /central-param/parametres      Récupérer tous les paramètres
+POST   /central-param/parametre       Récupérer un paramètre par nom
+POST   /central-param/full-test       Tester CentralParam + CentralParamConfig + tous les liens
+```
+
+### 8.7 Module Infrastructure
+
+```
+POST   /infra/disponibilite/serveur   Ping disponibilité par rôle
+POST   /infra/caracteristiques        Infos OS via PowerShell distant
+POST   /infra/performances            Métriques WMI (CPU, RAM, disque, réseau)
+POST   /infra/seuils                  Vérifier métriques vs seuils configurables
+POST   /infra/antivirus               Détecter solutions antivirus
+POST   /infra/port/verification       Vérifier ouverture port 5986 WinRM
+POST   /infra/fonctionnalites         Vérifier fonctionnalités Windows (IIS, .NET, WIF)
+POST   /infra/services/windows        Vérifier ASP.NET State + WWW Publishing démarrés
+POST   /infra/firewall                Vérifier règles firewall inter-serveurs
+POST   /infra/datetime                Vérifier synchronisation date/heure (dérive NTP)
+```
+
+### 8.8 Module Base de données
+
+```
+POST   /database/disponibilite              Disponibilité + version SQL Server
+POST   /database/services                   Services SQL (Agent, SSIS, Browser) démarrés
+POST   /database/verification/catalogue     Catalogues PS et fonctions (regex ROUTINE_DEFINITION)
+POST   /database/catalogue/requetesql       Catalogues dans rmdb_valeurdecritreBase
+POST   /database/verification/organisation-id  OrganizationId (table paramétrable par l'utilisateur)
+POST   /database/triggers                   Triggers CRM existants et activés
+POST   /database/index/fragmentation        Taux fragmentation + recommandation (rebuild/reorganize)
+POST   /database/index/missing              Index manquants (sys.dm_db_missing_index_details)
+POST   /database/tempdb                     Configuration TempDB (4 fichiers, tailles égales)
+POST   /database/configuration/seuils       Seuils SQL Server (sys.configurations)
+POST   /database/facturier                  Vérifier valeurs facturier encaissable + lien CentralParam
+POST   /database/migration/comptable        Vérifier migration paramétrage comptable
+POST   /database/users/admin                Lister les comptes sysadmin SQL de l'instance
+POST   /database/ps/catalogue               Lister toutes PS + vérifier leurs catalogues
+POST   /database/organisation-id/check      Vérification OrganizationId sur une table donnée
+```
+
+### 8.9 Module Batch
+
+```
+POST   /batch/services/windows              Lister services Windows SAPHIRV3
+POST   /batch/config/verification           Vérifier config CentralParam dans les .config
+POST   /batch/criteres                      Vérifier fichier critères (PARAMCRIT0001)
+POST   /batch/webdeploy                     Vérifier installation Web Deploy
+POST   /batch/datetime                      Vérifier date/heure serveurs Batch
+POST   /batch/pool/services                 Services depuis pool IIS + valeurs CentralParam
+```
+
+### 8.10 Module Backend
+
+```
+POST   /backend/services/crm               Services Dynamics CRM (async + sandbox)
+POST   /backend/fonctionnalites            IIS installé sur serveur Backend
+POST   /backend/version                    Version CRM depuis Backend
+```
+
+### 8.11 Module Rapport SSRS
+
+```
+POST   /rapport/disponibilite             Service SSRS démarré + endpoint /ReportServer
+POST   /rapport/sources                   Sources de données par rapport/dossier
+POST   /rapport/regionaux                 Formats date/heure régionaux (Français)
+POST   /rapport/connexion/shared          Chaîne de connexion partagée (login/MDP)
+POST   /rapport/connexion/verification    Vérifier que tous les rapports utilisent la chaîne partagée
+```
+
+---
+
+## 9. Modules de vérification
+
+### Comment fonctionne une vérification
+
+```
+1. POST /verifications
+   └── Corps : { environment_id, modules: [...], profil_id (optionnel) }
+
+2. Flask crée une ligne Verifications (start_time=NOW, statut=en_cours)
+
+3. Pour chaque module sélectionné :
+   └── Crée VerificationModules (statut=en_attente)
+
+4. Exécution parallèle (ThreadPoolExecutor) :
+   └── Chaque thread exécute son module
+   └── Chaque point → ControlResults (statut, valeur_obtenue, valeur_attendue, message)
+   └── Chaque serveur → ServerResults
+
+5. Fin de chaque module :
+   └── VerificationModules.statut mis à jour
+   └── Compteurs ok/ko mis à jour
+
+6. Fin de toutes les vérifications :
+   └── Verifications.end_time = NOW
+   └── Verifications.statut_global calculé
+   └── Compteurs totaux mis à jour
+
+7. Frontend poll GET /verifications/{id}/status toutes les 2 secondes
+   └── Affiche progression en temps réel module par module
+```
+
+### Nommage des codes de points de contrôle
+
+```
+CRM_001  → Disponibilité CRM
+CRM_002  → Version CRM
+CRM_003  → Ressource JS FonctionsGenerales — nomBaseDeDonnees
+CRM_004  → Ressource JS FonctionsGenerales — strIpserveur
+CRM_005  → Ressource JS FonctionsGenerales — strUrl_webservic_ps_extern_database
+CRM_006  → Clé de chiffrement active
+CRM_007  → Authentification compte CRM
+BDD_001  → Disponibilité SQL Server
+BDD_002  → Version SQL Server compatible CRM
+BDD_003  → Trigger gs2e_Trg_UniciteCampagneFacturation actif
+BDD_004  → Trigger trg_UpdateRequeteSQL actif
+BDD_005  → Catalogues PS corrects
+BDD_006  → Catalogues rmdb_valeurdecritreBase
+BDD_007  → OrganizationId cohérent
+BDD_008  → Fragmentation index
+BDD_009  → Index manquants
+BDD_010  → TempDB — 4 fichiers
+BDD_011  → TempDB — tailles égales
+INF_001  → Disponibilité Srv Frontend
+INF_002  → Disponibilité Srv Backend
+INF_003  → Disponibilité Srv BDD
+INF_004  → Disponibilité Srv Batch
+INF_005  → Disponibilité Srv Rapport
+INF_006  → Port 5986 ouvert
+INF_007  → RAM suffisante
+INF_008  → Disque suffisant
+INF_009  → CPU acceptable
+BAT_001  → Services SAPHIRV3 démarrés
+BAT_002  → CentralParam dans config services
+BAT_003  → Fichier critères PARAMCRIT0001 présent
+BAT_004  → ASP.NET State Service démarré
+BAT_005  → WWW Publishing Service démarré
+BCK_001  → Service async Dynamics CRM démarré
+BCK_002  → Service sandbox Dynamics CRM démarré
+BCK_003  → IIS installé sur Backend
+RPT_001  → Service SSRS démarré
+RPT_002  → Endpoint /ReportServer accessible
+RPT_003  → Formats régionaux Français
+```
+
+---
+
+## 10. Points de contrôle (checklist)
+
+### Résumé par module
+
+| Module | Points | Automatisables | Priorité |
+|---|---|---|---|
+| CRM / Frontend | 8 | 8 | HAUTE |
+| Base de données | 14 | 14 | HAUTE |
+| Infrastructure | 10 | 10 | MOYENNE |
+| Batch | 8 | 8 | HAUTE |
+| Backend | 4 | 4 | HAUTE |
+| Rapport SSRS | 5 | 5 | BASSE |
+| **TOTAL** | **49** | **49** | |
+
+### Seuils configurables (depuis .env)
+
+| Seuil | Variable .env | Valeur par défaut |
+|---|---|---|
+| RAM minimale | `SEUIL_RAM_MIN_GB` | 8 Go |
+| Disque minimal | `SEUIL_DISQUE_MIN_GB` | 20 Go |
+| CPU maximal | `SEUIL_CPU_MAX_PERCENT` | 80% |
+| Fragmentation REORGANIZE | `SEUIL_FRAGMENTATION_REORGANIZE` | 10% |
+| Fragmentation REBUILD | `SEUIL_FRAGMENTATION_REBUILD` | 30% |
+| Fichiers TempDB | `TEMPDB_FICHIERS_REQUIS` | 4 |
+
+---
+
+## 11. Authentification
+
+### Flux complet
+
+```
+1. Utilisateur saisit login Windows + mot de passe
+2. POST /auth/login { username, password, domain }
+3. Backend → connexion ldap3 NTLM au contrôleur de domaine AD
+4. Si succès :
+   a. Cherche dans Users WHERE login_ad = username AND actif = TRUE
+   b. Si non trouvé → 403 Forbidden ("Accès non autorisé — contacter l'administrateur DDI")
+   c. Si trouvé → crée session_utilisateur { token: UUID, expiration: +8h }
+   d. Retourne { token, role, nom_complet, expiration }
+5. Frontend stocke le token en mémoire (Pinia store — PAS localStorage)
+6. Chaque requête suivante envoie Header: Authorization: Bearer <token>
+7. Middleware Flask vérifie le token à chaque requête protégée
+```
+
+### Sécurité
+
+- Les mots de passe ne sont **jamais** stockés ni loggés
+- Les tokens sont des UUID v4 aléatoires (pas de JWT — pas de données en clair dans le token)
+- Expiration automatique des sessions après 8 heures (configurable)
+- Un utilisateur peut avoir plusieurs sessions simultanées (multi-onglets)
+- La déconnexion invalide uniquement le token courant
+
+---
+
+## 12. Frontend Vue.js
+
+### Vues principales
+
+| Vue | Route | Accès |
+|---|---|---|
+| LoginView | `/login` | Public |
+| DashboardView | `/` | Tous |
+| EnvironmentsView | `/environments` | Tous (création : Admin) |
+| VerificationView | `/verify/:id` | Tous |
+| HistoryView | `/history` | Tous |
+| ReportsView | `/reports` | Tous |
+| AdminView | `/admin` | Admin seulement |
+
+### Composants clés
+
+```
+ModuleSelector.vue     → Sélection des modules à vérifier (avec profils)
+ProgressTracker.vue    → Barre de progression en temps réel (polling /status)
+ResultsPanel.vue       → Affichage résultats par module avec indicateurs OK/KO/WARN
+EnvironmentForm.vue    → Formulaire création/édition environnement avec test URL
+ReportGenerator.vue    → Sélection format + génération + envoi email
+ComparisonView.vue     → Vue différentielle entre deux sessions
+```
+
+### Gestion des états (Pinia)
+
+```javascript
+// stores/auth.js     → user, token, role
+// stores/env.js      → environments, currentEnv
+// stores/verif.js    → currentSession, progress, results
+// stores/report.js   → generatedReports
+```
+
+---
+
+## 13. Tests
+
+### Lancer les tests
+
+```bash
+# Tous les tests
+pytest
+
+# Avec coverage
+pytest --cov=app --cov-report=html
+# Rapport HTML dans htmlcov/
+
+# Un module spécifique
+pytest tests/test_database_service.py -v
+
+# Tests rapides (sans appels réseau réels)
+pytest -m "not integration"
+```
+
+### Structure des tests
+
+```
+tests/
+├── conftest.py                    # Fixtures : mock pyodbc, PSSession, ldap3, requests
+├── test_auth_service.py           # Tests authentification AD (mock ldap3)
+├── test_crm_service.py            # Tests CRM (mock requests NTLM)
+├── test_database_service.py       # Tests BDD (mock pyodbc)
+├── test_infra_service.py          # Tests infra (mock ping3, subprocess)
+├── test_central_param_service.py  # Tests CentralParam (mock zeep)
+└── test_verification_service.py   # Tests orchestration (mock tous les services)
+```
+
+### Couverture minimale attendue
+
+| Service | Couverture cible |
+|---|---|
+| crm_service | 70% |
+| database_service | 70% |
+| auth_service | 80% |
+| infra_service | 60% |
+| verification_service | 65% |
+
+---
+
+## 14. Déploiement en production
+
+### Pipeline Azure DevOps (CI/CD DDI)
+
+```yaml
+# azure-pipelines.yml (simplifié)
+stages:
+- stage: Build
+  jobs:
+  - job: BackendBuild
+    steps:
+    - script: pip install -r requirements.txt
+    - script: pytest --cov=app
+  - job: FrontendBuild
+    steps:
+    - script: npm install && npm run build
+    - task: CopyFiles — dist/ vers artefact
+
+- stage: Deploy
+  jobs:
+  - job: DeployToIIS
+    steps:
+    - task: WindowsMachineFileCopy — dist/ vers C:\ToolSupportFrontend
+    - task: PowerShell — Restart-Service ToolSupportAPI
+```
+
+### Service Windows pour Flask
+
+Créer un service Windows pour que Flask tourne en permanence :
+
+```bash
+# Installer waitress (serveur WSGI production)
+pip install waitress
+
+# run_production.py
+from waitress import serve
+from app import create_app
+app = create_app('production')
+serve(app, host='127.0.0.1', port=5000, threads=8)
+
+# Créer le service (avec NSSM)
+nssm install ToolSupportAPI "C:\Python310\python.exe" "C:\ToolSupportAPI\run_production.py"
+nssm set ToolSupportAPI AppDirectory C:\ToolSupportAPI
+nssm start ToolSupportAPI
+```
+
+---
+
+## 15. Dépannage
+
+### Erreurs fréquentes
+
+| Erreur | Cause | Solution |
+|---|---|---|
+| `LDAP connection refused` | AD non joignable ou port 636 fermé | Vérifier `AD_SERVER` dans .env + règles firewall |
+| `pyodbc.Error: IM002` | Pilote ODBC 17 non installé | Installer "ODBC Driver 17 for SQL Server" |
+| `WinRM connection timeout` | Port 5986 fermé ou PSRemoting désactivé | `Enable-PSRemoting -Force` sur le serveur cible |
+| `401 Unauthorized CRM` | Credentials NTLM incorrects ou compte verrouillé | Vérifier dans `POST /crm/auth` |
+| `zeep.exceptions.Fault` | URL CentralParam incorrecte ou service arrêté | Vérifier l'URL + redémarrer le service Windows CentralParam |
+| `Token expired` | Session > 8 heures | Se reconnecter — configurable via `SESSION_DURATION_HOURS` |
+| `Missing module_status` | VerificationModules pas mis à jour | Vérifier les logs Flask pour l'exception dans le thread |
+
+### Logs
+
+```bash
+# Logs applicatifs
+tail -f logs/tool_support.log
+
+# Logs IIS (frontend)
+C:\inetpub\logs\LogFiles\W3SVC1\
+
+# Vérifier l'état des services
+Get-Service ToolSupportAPI
+Get-Service W3SVC
+```
+
+### Plug-in Trace Log (pour erreurs CRM)
+
+Dans SaphirV3 : Paramètres → Plug-in Trace Log → filtrer par date pour voir les erreurs des plugins au moment des vérifications.
+
+---
+
+## 16. Contribuer
+
+### Ajouter un nouveau point de contrôle
+
+1. Ajouter le point dans `scripts/seed_controls.py` avec son `code_point` et sa description
+2. Implémenter la logique dans le service concerné (ex: `database_service.py`)
+3. L'appeler depuis `verification_service.py` dans la fonction du module correspondant
+4. Écrire le test unitaire dans `tests/`
+5. Relancer `python scripts/seed_controls.py` pour mettre à jour la BDD
+
+### Ajouter un nouveau module
+
+1. Créer `app/controllers/nouveau_controller.py` (blueprint Flask)
+2. Créer `app/services/nouveau_service.py` (logique métier)
+3. Enregistrer le blueprint dans `app/__init__.py`
+4. Ajouter le module dans la table `Modules` via `seed_controls.py`
+5. Ajouter les controls du module
+6. Intégrer le module dans `verification_service.py`
+
+### Standards de code
+
+- Nommage : `snake_case` pour Python, `camelCase` pour JavaScript/Vue
+- Aucune valeur hardcodée — tout dans `.env`
+- Aucune logique métier dans les controllers Flask
+- Chaque service doit avoir des tests unitaires avec mock des appels externes
+- Toutes les exceptions doivent être capturées — jamais de 500 non géré
+
+---
+
+## Dépendances Python (`requirements.txt`)
+
+```
+flask==3.0.0
+flask-sqlalchemy==3.1.1
+flask-migrate==4.0.5
+flask-cors==4.0.0
+python-dotenv==1.0.0
+requests==2.31.0
+requests-ntlm==1.2.0
+pyodbc==5.0.1
+ldap3==2.9.1
+zeep==4.2.1
+ping3==4.0.4
+wmi==1.5.1
+pywin32==306
+flasgger==0.9.7.1
+waitress==3.0.0
+reportlab==4.0.7
+openpyxl==3.1.2
+pytest==7.4.3
+pytest-cov==4.1.0
+```
+
+---
+
+## Dépendances Frontend (`package.json` — principales)
+
+```json
+{
+  "dependencies": {
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0",
+    "pinia": "^2.1.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}
+```
+
+---
+
+*Projet développé dans le cadre du stage de fin de cycle TS STIC-INFO — ESI-INPHB*  
+*GS2E — Département des Développements Informatiques (DDI) — Abidjan-Plateau, Côte d'Ivoire*  
+*Année académique 2025–2026*
