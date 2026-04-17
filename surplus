@@ -1,0 +1,39 @@
+Le flux réel est le suivant : l'utilisateur saisit uniquement l'URL du CentralParam. L'application fait une requête SOAP sur cette URL, et c'est le service CentralParam lui-même qui retourne tous les autres paramètres — l'URL du CRM, le nom de la base de données, le lien du serveur batch, etc.
+Donc stocker crm_url, instance_sql, base_crm dans la table Environments serait une redondance incorrecte. Ces valeurs ne sont pas saisies par l'utilisateur — elles sont découvertes dynamiquement à chaque vérification.
+
+Ce que la table Environments doit vraiment contenir
+Seulement ce que l'utilisateur saisit manuellement pour identifier et joindre l'environnement :
+Environments
+├── environment_id      PK
+├── name                "SaphirV3-PRODUCTION"
+├── central_param_url   "http://srv-batch/CentralParam/service.svc"
+├── domaine_ad          "gs2e.local"   ← seul élément non fourni par CentralParam
+├── actif               TRUE/FALSE
+├── statut_validation   non_valide | valide | en_erreur
+├── date_validation     dernière fois que l'URL a été testée
+├── cree_par_id         FK → Users
+└── date_creation
+
+Et la table VerificationConfigurations sert exactement à ça
+C'est elle qui capture le snapshot des valeurs récupérées depuis CentralParam au moment de la vérification. Elle doit être enrichie ainsi :
+VerificationConfigurations
+├── config_snapshot_id   PK
+├── verification_id      FK → Verifications
+├── crm_url              ← récupéré depuis CentralParam au moment de la vérif
+├── db_url               ← idem
+├── batch_url            ← idem
+├── version_crm          ← récupéré via Web API CRM
+├── central_param_values ← JSON de tous les paramètres retournés
+└── captured_at          horodatage du snapshot
+
+Pourquoi ce snapshot est important malgré tout
+Même si tu ne stockes pas ces valeurs dans Environments, tu dois les sauvegarder au moment de chaque vérification dans VerificationConfigurations. La raison : si demain quelqu'un change la config dans CentralParam et que quelque chose casse, tu peux regarder l'historique et dire "lors de la vérification du 14 avril, l'URL CRM était X et la base était Y". Sans snapshot tu perds cette traçabilité d'audit.
+
+Le flux corrigé en résumé
+Utilisateur saisit :          Récupéré automatiquement depuis CentralParam :
+┌─────────────────────┐       ┌──────────────────────────────────────────────┐
+│ name                │  →    │ crm_url, db_name, batch_url, autres params   │
+│ central_param_url   │──────►│ (stockés dans VerificationConfigurations     │
+│ domaine_ad          │       │  uniquement au moment de chaque vérification)│
+└─────────────────────┘       └──────────────────────────────────────────────┘
+Donc ton schéma Environments avec juste name et central_param_url était le bon instinct de départ. J'aurais dû valider ça immédiatement au lieu d'ajouter des champs qui ne t'appartiennent pas à saisir.
