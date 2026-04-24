@@ -1,0 +1,132 @@
+classDiagram
+    direction TB
+    
+    class User {
+        +UUID user_id PK
+        +string username UK
+        +string nom_complet
+        +string email UK
+        +string role
+    }
+
+    class Categorie {
+        +UUID categorie_id PK
+        +string name UK
+    }
+
+    class Environment {
+        +UUID environment_id PK
+        +string name UK
+        +string central_param_url
+        +UUID categorie_id FK
+        +boolean is_active
+    }
+
+    class EnvironmentConfiguration {
+        +UUID config_id PK
+        +UUID environment_id FK UK
+        +string db_url
+        +string crm_url
+        +string working_directory
+        +string log_directory
+    }
+
+    class Role {
+        +UUID role_id PK
+        +string name UK
+    }
+
+    class Server {
+        +UUID server_id PK
+        +string server_name
+        +string hostname
+        +string ip_address
+        +UUID role_id FK
+        +UUID environment_id FK
+        +int port_winrm
+    }
+
+    class Module {
+        +UUID module_id PK
+        +string code UK
+        +string name
+        +int execution_order
+        +boolean is_required
+    }
+
+    class Control {
+        +UUID control_id PK
+        +string code_point UK
+        +string description
+        +string expected_value
+        +string endpoint_path
+        +int timeout_seconds
+        +UUID module_id FK
+    }
+
+    class Verification {
+        +UUID verification_id PK
+        +UUID environment_id FK
+        +UUID user_id FK
+        +datetime start_time
+        +datetime end_time
+        +string global_status
+        +int total_tests
+        +int total_ok
+        +int total_ko
+        +int total_warning
+    }
+
+    class ConfigSnapshot {
+        +UUID config_snapshot_id PK
+        +UUID verification_id FK UK
+        +json params_json
+        +datetime captured_at
+    }
+
+    class VerificationModule {
+        +UUID verification_module_id PK
+        +UUID verification_id FK
+        +UUID module_id FK
+        +string status
+        +int total_tests
+        +int total_ok
+        +int total_ko
+    }
+
+    class ControlResult {
+        +UUID control_result_id PK
+        +UUID verification_module_id FK
+        +UUID control_id FK
+        +UUID server_id FK
+        +string status
+        +string observed_value
+        +string expected_value
+        +string error_message
+        +json details
+        +int duration_ms
+    }
+
+    class ServerResult {
+        +UUID server_result_id PK
+        +UUID verification_id FK
+        +UUID server_id FK
+        +string status
+        +json details
+        +int response_time_ms
+    }
+
+    User "1" -- "0..*" Verification
+    Environment "1" -- "0..*" Server
+    Environment "1" -- "1" Categorie
+    Environment "1" -- "0..1" EnvironmentConfiguration
+    Environment "1" -- "0..*" Verification
+    Server "1" -- "1" Role
+    Server "1" -- "0..*" ControlResult
+    Server "1" -- "0..*" ServerResult
+    Module "1" -- "0..*" Control
+    Verification "1" -- "0..*" VerificationModule
+    Verification "1" -- "1" ConfigSnapshot
+    Verification "1" -- "0..*" ServerResult
+    VerificationModule "1" -- "0..*" ControlResult
+    Control "1" -- "0..*" ControlResult
